@@ -125,6 +125,11 @@ def parse_args():
         default=None,
         help="Comma-separated YOLO classes to draw, use 'none' to disable YOLO labels.",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without GUI display (for servers without display).",
+    )
     return parser.parse_args()
 
 
@@ -742,7 +747,8 @@ def main():
         print(f"Relay push enabled: {args.relay_url}")
     reader.start()
 
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    if not args.headless:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     prev_time = time.time()
     frame_index = 0
     latest_reader_index = 0
@@ -807,15 +813,18 @@ def main():
             if relay_client is not None:
                 relay_client.publish_frame(annotated_frame)
 
-            cv2.imshow(WINDOW_NAME, annotated_frame)
+            if not args.headless:
+                cv2.imshow(WINDOW_NAME, annotated_frame)
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            key_pressed = cv2.waitKey(1) & 0xFF if not args.headless else 0xFF
+            if key_pressed == ord("q"):
                 break
     finally:
         if relay_client is not None:
             relay_client.stop()
         reader.stop()
-        cv2.destroyAllWindows()
+        if not args.headless:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
