@@ -1,5 +1,30 @@
 {
-  "yolo_label_classes": [
-    "person"
-  ]
+    "yolo_label_classes": [
+        "person",
+        "cat",
+        "dog",
+        "backpack",
+        "umbrella",
+        "handbag",
+        "tie",
+        "suitcase",
+        "bottle",
+        "wine glass",
+        "cup",
+        "fork",
+        "chair",
+        "couch",
+        "potted plant",
+        "bed",
+        "dining table",
+        "tv",
+        "laptop",
+        "mouse",
+        "remote",
+        "keyboard",
+        "cell phone",
+        "microwave",
+        "book",
+        "clock"
+    ]
 }

@@ -21,6 +21,7 @@ from video_relay import FrameRelayClient
 DEFAULT_STREAM_URL = "http://192.168.3.200/stream"
 DEFAULT_RAW_VIEW_URL = "ws://8.156.86.59/ws/raw-view"
 DEFAULT_RELAY_URL = "ws://8.156.86.59/ws/push?token=2301dd693ce4d6683c167f66dc1e8b7b5b0d8c207bbd2b3a"
+DEFAULT_STRANGER_ALERT_URL = "http://8.156.86.59/api/stranger-alerts"
 WINDOW_NAME = "YOLO + Face Recognition"
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 MODEL_PATH_CPU = str(BASE_DIR / "yolov8n.pt")
@@ -39,6 +40,7 @@ REFERENCE_NUM_JITTERS = 5
 PERSON_BOX_PADDING_RATIO = 0.15
 MIN_PERSON_BOX_SIZE = 50
 DEFAULT_YOLO_LABEL_CLASSES = ("person",)
+STRANGER_ALERT_COOLDOWN = 10.0
 
 
 def parse_args():
@@ -129,6 +131,11 @@ def parse_args():
         "--headless",
         action="store_true",
         help="Run without GUI display (for servers without display).",
+    )
+    parser.add_argument(
+        "--stranger-alert-url",
+        default=DEFAULT_STRANGER_ALERT_URL,
+        help=f"API endpoint for stranger alerts, default: {DEFAULT_STRANGER_ALERT_URL}",
     )
     return parser.parse_args()
 
@@ -716,6 +723,55 @@ def detect_device():
     return device, model_path
 
 
+def upload_stranger_alert(frame, alert_url, timeout=5.0):
+    """Upload stranger alert frame to the backend API."""
+    try:
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        jpg_bytes = buffer.tobytes()
+
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        boundary = '----WebKitFormBoundary' + ''.join(np.random.choice(list('0123456789abcdef'), 16))
+        body = (
+            f'--{boundary}\r\n'
+            f'Content-Disposition: form-data; name="timestamp"\r\n\r\n'
+            f'{timestamp}\r\n'
+            f'--{boundary}\r\n'
+            f'Content-Disposition: form-data; name="image"; filename="stranger.jpg"\r\n'
+            f'Content-Type: image/jpeg\r\n\r\n'
+        ).encode('utf-8') + jpg_bytes + f'\r\n--{boundary}--\r\n'.encode('utf-8')
+
+        request = urllib.request.Request(
+            alert_url,
+            data=body,
+            headers={
+                'Content-Type': f'multipart/form-data; boundary={boundary}',
+                'User-Agent': 'Python-ESP32-YOLO-Viewer/1.0',
+            },
+            method='POST'
+        )
+
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if response.status == 200:
+                print(f"Stranger alert uploaded successfully at {timestamp}")
+                return True
+            else:
+                print(f"Stranger alert upload failed with status {response.status}")
+                return False
+    except Exception as e:
+        print(f"Failed to upload stranger alert: {e}")
+        return False
+
+
+def check_stranger_detected(face_results, person_boxes):
+    """Check if there are persons detected but no known faces (strangers)."""
+    if not person_boxes:
+        return False
+
+    known_faces = [r for r in face_results if r["name"] != "Unknown"]
+    return len(known_faces) == 0
+
+
 def main():
     args = parse_args()
     socket.setdefaulttimeout(args.timeout)
@@ -753,6 +809,7 @@ def main():
     frame_index = 0
     latest_reader_index = 0
     last_face_results = []
+    last_stranger_alert_time = 0
 
     try:
         while True:
@@ -786,6 +843,14 @@ def main():
                     known_face_names,
                 )
             draw_faces(annotated_frame, last_face_results)
+
+            # Check for stranger detection
+            person_boxes = list(iter_person_boxes(results[0], inference_frame.shape))
+            if person_boxes and check_stranger_detected(last_face_results, person_boxes):
+                curr_time = time.time()
+                if curr_time - last_stranger_alert_time >= STRANGER_ALERT_COOLDOWN:
+                    if upload_stranger_alert(annotated_frame, args.stranger_alert_url, args.timeout):
+                        last_stranger_alert_time = curr_time
 
             curr_time = time.time()
             fps = 1.0 / max(curr_time - prev_time, 1e-6)
