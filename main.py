@@ -1,6 +1,7 @@
 import argparse
 import json
 import pathlib
+import queue
 import socket
 import threading
 import time
@@ -772,6 +773,63 @@ def check_stranger_detected(face_results, person_boxes):
     return len(known_faces) == 0
 
 
+class AsyncAlertUploader:
+    """Asynchronous uploader for stranger alerts to prevent blocking the main loop."""
+
+    def __init__(self, alert_url, timeout=5.0, max_queue_size=10):
+        self.alert_url = alert_url
+        self.timeout = timeout
+        self.upload_queue = queue.Queue(maxsize=max_queue_size)
+        self.worker_thread = None
+        self.running = False
+
+    def start(self):
+        """Start the background upload worker thread."""
+        if self.running:
+            return
+
+        self.running = True
+        self.worker_thread = threading.Thread(target=self._upload_worker, daemon=True)
+        self.worker_thread.start()
+        print("AsyncAlertUploader started")
+
+    def stop(self):
+        """Stop the background upload worker thread."""
+        if not self.running:
+            return
+
+        self.running = False
+        if self.worker_thread:
+            self.worker_thread.join(timeout=2.0)
+        print("AsyncAlertUploader stopped")
+
+    def enqueue_alert(self, frame):
+        """
+        Enqueue a frame for upload. Non-blocking.
+        Returns True if enqueued, False if queue is full.
+        """
+        try:
+            # Make a copy to avoid race conditions
+            frame_copy = frame.copy()
+            self.upload_queue.put_nowait(frame_copy)
+            return True
+        except queue.Full:
+            print("Alert upload queue is full, dropping frame")
+            return False
+
+    def _upload_worker(self):
+        """Background worker that processes the upload queue."""
+        while self.running:
+            try:
+                # Wait for frame with timeout to allow checking self.running
+                frame = self.upload_queue.get(timeout=0.5)
+                upload_stranger_alert(frame, self.alert_url, self.timeout)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Error in upload worker: {e}")
+
+
 def main():
     args = parse_args()
     socket.setdefaulttimeout(args.timeout)
@@ -801,6 +859,11 @@ def main():
         )
         relay_client.start()
         print(f"Relay push enabled: {args.relay_url}")
+
+    # Start async alert uploader
+    alert_uploader = AsyncAlertUploader(args.stranger_alert_url, timeout=args.timeout)
+    alert_uploader.start()
+
     reader.start()
 
     if not args.headless:
@@ -844,13 +907,14 @@ def main():
                 )
             draw_faces(annotated_frame, last_face_results)
 
-            # Check for stranger detection
+            # Check for stranger detection and enqueue for async upload
             person_boxes = list(iter_person_boxes(results[0], inference_frame.shape))
             if person_boxes and check_stranger_detected(last_face_results, person_boxes):
                 curr_time = time.time()
                 if curr_time - last_stranger_alert_time >= STRANGER_ALERT_COOLDOWN:
-                    if upload_stranger_alert(annotated_frame, args.stranger_alert_url, args.timeout):
+                    if alert_uploader.enqueue_alert(annotated_frame):
                         last_stranger_alert_time = curr_time
+                        print("Stranger detected, alert enqueued for upload")
 
             curr_time = time.time()
             fps = 1.0 / max(curr_time - prev_time, 1e-6)
@@ -885,6 +949,7 @@ def main():
             if key_pressed == ord("q"):
                 break
     finally:
+        alert_uploader.stop()
         if relay_client is not None:
             relay_client.stop()
         reader.stop()
