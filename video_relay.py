@@ -39,14 +39,14 @@ class LatestPayloadBuffer:
         self._payload = None
         self._closed = False
 
-    def submit(self, payload: str) -> int:
+    def submit(self, payload) -> int:
         with self._condition:
             self._sequence += 1
             self._payload = payload
             self._condition.notify_all()
             return self._sequence
 
-    def wait_for_next(self, last_sequence: int, timeout: float | None = None) -> tuple[int, str]:
+    def wait_for_next(self, last_sequence: int, timeout: float | None = None) -> tuple[int, object]:
         deadline = None if timeout is None else time.monotonic() + timeout
 
         with self._condition:
@@ -121,7 +121,7 @@ class FrameRelayClient:
             return False
 
         self._last_submit_at = now
-        self._buffer.submit(build_frame_message(jpeg.tobytes()))
+        self._buffer.submit(jpeg.tobytes())
         return True
 
     def _run(self):

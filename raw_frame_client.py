@@ -7,11 +7,17 @@ import cv2
 import numpy as np
 
 
-def decode_frame_message(message: str) -> bytes:
-    parsed = json.loads(message)
-    if parsed.get("type") != "frame" or parsed.get("mime") != "image/jpeg" or not parsed.get("data"):
-        raise ValueError("Unsupported raw-frame payload.")
-    return base64.b64decode(parsed["data"], validate=True)
+def decode_frame_message(message) -> bytes:
+    if isinstance(message, (bytes, bytearray, memoryview)):
+        return bytes(message)
+
+    if isinstance(message, str):
+        parsed = json.loads(message)
+        if parsed.get("type") != "frame" or parsed.get("mime") != "image/jpeg" or not parsed.get("data"):
+            raise ValueError("Unsupported raw-frame payload.")
+        return base64.b64decode(parsed["data"], validate=True)
+
+    raise ValueError("Unsupported raw-frame payload type.")
 
 
 class LatestCloudFrameReader:

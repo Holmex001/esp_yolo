@@ -42,6 +42,9 @@ PERSON_BOX_PADDING_RATIO = 0.15
 MIN_PERSON_BOX_SIZE = 50
 DEFAULT_YOLO_LABEL_CLASSES = ("person",)
 STRANGER_ALERT_COOLDOWN = 10.0
+STRANGER_ALERT_MAX_WIDTH = 640
+STRANGER_ALERT_JPEG_QUALITY = 70
+STRANGER_ALERT_QUEUE_SIZE = 1
 
 
 def parse_args():
@@ -447,6 +450,11 @@ def resize_by_width(frame, max_width):
     return resized, scale
 
 
+def prepare_stranger_alert_frame(frame, max_width=STRANGER_ALERT_MAX_WIDTH):
+    alert_frame, _ = resize_by_width(frame, max_width)
+    return alert_frame.copy()
+
+
 def overlay_style(frame):
     height, width = frame.shape[:2]
     short_side = min(height, width)
@@ -727,7 +735,14 @@ def detect_device():
 def upload_stranger_alert(frame, alert_url, timeout=5.0):
     """Upload stranger alert frame to the backend API."""
     try:
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        ok, buffer = cv2.imencode(
+            '.jpg',
+            frame,
+            [cv2.IMWRITE_JPEG_QUALITY, STRANGER_ALERT_JPEG_QUALITY],
+        )
+        if not ok:
+            print("Failed to encode stranger alert frame")
+            return False
         jpg_bytes = buffer.tobytes()
 
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -776,7 +791,7 @@ def check_stranger_detected(face_results, person_boxes):
 class AsyncAlertUploader:
     """Asynchronous uploader for stranger alerts to prevent blocking the main loop."""
 
-    def __init__(self, alert_url, timeout=5.0, max_queue_size=10):
+    def __init__(self, alert_url, timeout=5.0, max_queue_size=STRANGER_ALERT_QUEUE_SIZE):
         self.alert_url = alert_url
         self.timeout = timeout
         self.upload_queue = queue.Queue(maxsize=max_queue_size)
@@ -806,16 +821,25 @@ class AsyncAlertUploader:
     def enqueue_alert(self, frame):
         """
         Enqueue a frame for upload. Non-blocking.
-        Returns True if enqueued, False if queue is full.
+        Keeps only the newest pending alert frame.
         """
         try:
-            # Make a copy to avoid race conditions
-            frame_copy = frame.copy()
+            frame_copy = prepare_stranger_alert_frame(frame)
             self.upload_queue.put_nowait(frame_copy)
             return True
         except queue.Full:
-            print("Alert upload queue is full, dropping frame")
-            return False
+            try:
+                self.upload_queue.get_nowait()
+                self.upload_queue.task_done()
+            except queue.Empty:
+                return False
+
+            try:
+                frame_copy = prepare_stranger_alert_frame(frame)
+                self.upload_queue.put_nowait(frame_copy)
+                return True
+            except queue.Full:
+                return False
 
     def _upload_worker(self):
         """Background worker that processes the upload queue."""
@@ -824,6 +848,7 @@ class AsyncAlertUploader:
                 # Wait for frame with timeout to allow checking self.running
                 frame = self.upload_queue.get(timeout=0.5)
                 upload_stranger_alert(frame, self.alert_url, self.timeout)
+                self.upload_queue.task_done()
             except queue.Empty:
                 continue
             except Exception as e:
